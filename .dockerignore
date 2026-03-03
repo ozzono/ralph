@@ -1,0 +1,30 @@
+# Git
+.git
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Archives
+archive/
+
+# Node modules in subdirectories
+**/node_modules/
+
+# Build artifacts
+dist/
+build/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Example files
+prd.json.example
+*.example
