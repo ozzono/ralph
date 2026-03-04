@@ -1,0 +1,138 @@
+FROM ubuntu:24.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install basic dependencies + Flutter dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    jq \
+    zsh \
+    wget \
+    vim \
+    ca-certificates \
+    # Flutter dependencies
+    clang \
+    cmake \
+    ninja-build \
+    pkg-config \
+    libgtk-3-dev \
+    liblzma-dev \
+    libstdc++-12-dev \
+    # Additional Flutter dependencies
+    unzip \
+    xz-utils \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for Claude Code (cannot run as root with --dangerously-skip-permissions)
+RUN useradd -m -s /bin/zsh ralph && \
+    usermod -aG sudo ralph
+
+# Set zsh as default shell for ralph user
+RUN usermod -s /bin/zsh ralph
+
+# Install Node.js (required for amp tool)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install Go
+RUN curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz -o /tmp/go.tar.gz && \
+    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz
+
+# Install Flutter SDK
+RUN curl -fsSL https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.27.4-stable.tar.xz -o /tmp/flutter.tar.xz && \
+    tar -xf /tmp/flutter.tar.xz -C /opt && \
+    rm /tmp/flutter.tar.xz
+
+# Set git safe.directory globally for all users
+RUN git config --system --add safe.directory /opt/flutter
+
+# Add Flutter to PATH
+ENV PATH="/opt/flutter/bin:/usr/local/go/bin:${PATH}"
+
+# Create global zshrc to prevent newuser-install prompt for any user
+RUN mkdir -p /etc/zsh && \
+    echo 'export PATH=$PATH:/workspace:/usr/local/bin:$HOME/.local/bin:/usr/local/go/bin:/opt/flutter/bin' > /etc/zsh/zshrc && \
+    echo 'export HOME=${HOME:-/tmp}' >> /etc/zsh/zshrc && \
+    echo 'alias ll="ls -la"' >> /etc/zsh/zshrc && \
+    echo '# Source oh-my-zsh if installed for this user' >> /etc/zsh/zshrc && \
+    echo 'if [ -f "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]; then' >> /etc/zsh/zshrc && \
+    echo '  source "$HOME/.oh-my-zsh/oh-my-zsh.sh"' >> /etc/zsh/zshrc && \
+    echo 'fi' >> /etc/zsh/zshrc
+
+# Install Oh My Zsh for root
+RUN sh -c "$(curl -fsSL https://raw.github.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
+
+# Create workspace directory and copy all files there
+WORKDIR /workspace
+COPY . /workspace/
+
+# Make the script executable
+RUN chmod +x /workspace/ralph.sh
+
+# Give ownership of workspace to ralph user and make it world-writable
+RUN chown -R ralph:ralph /workspace && \
+    chmod -R 777 /workspace
+
+# Create /application directory with write permissions for volume mounts
+RUN mkdir -p /application && \
+    chown ralph:ralph /application && \
+    chmod 777 /application
+
+# Set up PATH to include workspace scripts and npm global binaries
+ENV PATH="/workspace:/usr/local/bin:/opt/flutter/bin:${PATH}"
+
+# Install Claude Code and Oh My Zsh for ralph user
+USER ralph
+RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN sh -c "$(curl -fsSL https://raw.github.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
+
+# Set up .zshrc for ralph user
+RUN echo 'export PATH=$PATH:/workspace:/usr/local/bin:$HOME/.local/bin:/usr/local/go/bin:/opt/flutter/bin' > /home/ralph/.zshrc && \
+    echo 'source ~/.oh-my-zsh/oh-my-zsh.sh' >> /home/ralph/.zshrc && \
+    chown ralph:ralph /home/ralph/.zshrc
+
+# Set git safe.directory for Flutter (required for ralph user)
+RUN git config --global --add safe.directory /opt/flutter
+
+# Give Flutter ownership to ralph for precache steps
+USER root
+RUN chown -R ralph:ralph /opt/flutter
+USER ralph
+
+# Initialize Flutter (config and precache must run as ralph user due to ownership)
+RUN flutter config --no-analytics && \
+    flutter precache --web && \
+    flutter precache --linux
+
+# Make Flutter writable by all users (must be AFTER precache to include cached files)
+USER root
+RUN chmod -R 777 /opt/flutter
+
+# Create entrypoint to fix permissions at runtime (for --user flag)
+USER root
+RUN printf '#!/bin/sh\n\
+chmod -R 777 /workspace 2>/dev/null || true\n\
+chmod 777 /application 2>/dev/null || true\n\
+git config --global --add safe.directory /opt/flutter 2>/dev/null || true\n\
+# Set HOME for ralph user (uid 1000)\n\
+if [ "$(id -u)" = "1000" ]; then\n\
+  export HOME=/home/ralph\n\
+fi\n\
+export PATH="/opt/flutter/bin:/usr/local/go/bin:$PATH"\n\
+exec "$@"\n' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+
+SHELL ["/bin/zsh", "-c"]
+
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Keep container idle - user can run /ralph.sh manually
+CMD ["sleep", "infinity"]

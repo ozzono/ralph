@@ -29,8 +29,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
 # Install Claude Code CLI
 RUN npm install -g @anthropic-ai/claude-code
 
-# Note: amp tool should be installed separately or via npm if available
-# The user can add: RUN npm install -g amp-tool (or similar)
+# Install Go
+RUN curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz -o /tmp/go.tar.gz && \
+    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm /tmp/go.tar.gz
+
+# Add Go to PATH
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Create workspace directory and copy all files there
 WORKDIR /workspace
@@ -49,7 +54,7 @@ RUN mkdir -p /application && \
     chmod 777 /application
 
 # Set up PATH to include workspace scripts and npm global binaries
-ENV PATH="/workspace:/usr/local/bin:${PATH}"
+ENV PATH="/workspace:/usr/local/bin:/usr/local/go/bin:${PATH}"
 
 # Create global zshrc to prevent newuser-install prompt for any user
 RUN mkdir -p /etc/zsh && \
@@ -64,11 +69,6 @@ RUN mkdir -p /etc/zsh && \
 # Install Oh My Zsh for root
 RUN sh -c "$(curl -fsSL https://raw.github.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
 
-# Install Go
-RUN curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz -o /tmp/go.tar.gz && \
-    rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && \
-    rm /tmp/go.tar.gz
-
 # Install Claude Code and Oh My Zsh for ralph user
 USER ralph
 RUN curl -fsSL https://claude.ai/install.sh | bash
@@ -81,11 +81,14 @@ RUN echo 'export PATH=$PATH:/workspace:/usr/local/bin:$HOME/.local/bin:/usr/loca
 
 # Create entrypoint to fix permissions at runtime (for --user flag)
 USER root
-RUN echo '#!/bin/sh' > /entrypoint.sh && \
-    echo 'chmod -R 777 /workspace 2>/dev/null || true' >> /entrypoint.sh && \
-    echo 'chmod 777 /application 2>/dev/null || true' >> /entrypoint.sh && \
-    echo 'exec "$@"' >> /entrypoint.sh && \
+RUN printf '#!/bin/sh\n\
+chmod -R 777 /workspace 2>/dev/null || true\n\
+chmod 777 /application 2>/dev/null || true\n\
+export PATH="/usr/local/go/bin:$PATH"\n\
+exec "$@"\n' > /entrypoint.sh && \
     chmod +x /entrypoint.sh
+
+SHELL ["/bin/zsh", "-c"]
 
 ENTRYPOINT ["/entrypoint.sh"]
 

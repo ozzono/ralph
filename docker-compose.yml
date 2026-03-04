@@ -1,8 +1,0 @@
-services:
-  ralph-loop:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ralph-loop:latest
-    # No command/entrypoint here - this compose is only for building
-    # The image will be run with: docker run -v $(pwd):/workspace ralph-loop
