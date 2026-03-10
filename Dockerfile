@@ -70,27 +70,45 @@ RUN mkdir -p /etc/zsh && \
 RUN sh -c "$(curl -fsSL https://raw.github.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
 
 # Install Claude Code and Oh My Zsh for ralph user
+
 USER ralph
 RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN sh -c "$(curl -fsSL https://raw.github.com/robbyrussell/oh-my-zsh/master/tools/install.sh)" "" --unattended
 
+# Set up .zshenv - always sourced, unsets RALPH_GIT_ALLOWED immediately
+RUN echo 'unset RALPH_GIT_ALLOWED  # Disable git after initial shell setup' > /home/ralph/.zshenv && \
+    chown ralph:ralph /home/ralph/.zshenv
+
 # Set up .zshrc for ralph user
 RUN echo 'export PATH=$PATH:/workspace:/usr/local/bin:$HOME/.local/bin:/usr/local/go/bin' > /home/ralph/.zshrc && \
-    echo 'source ~/.oh-my-zsh/oh-my-zsh.sh' >> /home/ralph/.zshrc && \
-    chown ralph:ralph /home/ralph/.zshrc
+echo 'export ZSH_DISABLE_COMPFIX=true' >> /home/ralph/.zshrc && \
+echo 'source ~/.oh-my-zsh/oh-my-zsh.sh' >> /home/ralph/.zshrc && \
+chown ralph:ralph /home/ralph/.zshrc
 
-# Create entrypoint to fix permissions at runtime (for --user flag)
+# Replace git with a wrapper script that checks for RALPH_GIT_ALLOWED env var
 USER root
-RUN printf '#!/bin/sh\n\
-chmod -R 777 /workspace 2>/dev/null || true\n\
-chmod 777 /application 2>/dev/null || true\n\
-export PATH="/usr/local/go/bin:$PATH"\n\
-exec "$@"\n' > /entrypoint.sh && \
-    chmod +x /entrypoint.sh
+RUN mv /usr/bin/git /usr/local/bin/.git.bin && \
+    printf '#!/bin/sh\n' > /usr/bin/git && \
+    printf '# Git wrapper - only works when RALPH_GIT_ALLOWED is set\n' >> /usr/bin/git && \
+    printf 'if [ -n "$RALPH_GIT_ALLOWED" ]; then\n' >> /usr/bin/git && \
+    printf '    exec /usr/local/bin/.git.bin "$@"\n' >> /usr/bin/git && \
+    printf 'else\n' >> /usr/bin/git && \
+    printf '    echo "ERROR: git is not accessible - this is a security feature! Do NOT use git directly; Do NOT attempt to bypass this restriction." >&2\n' >> /usr/bin/git && \
+    printf '    exit 1\n' >> /usr/bin/git && \
+    printf 'fi\n' >> /usr/bin/git && \
+    chmod +x /usr/bin/git && \
+    chmod +x /usr/local/bin/.git.bin && \
+    rm -f /usr/bin/git-receive-pack /usr/bin/git-upload-archive /usr/bin/git-upload-pack
 
-SHELL ["/bin/zsh", "-c"]
+# Replace zsh with a wrapper that sets RALPH_GIT_ALLOWED, then calls real zsh
+RUN mv /bin/zsh /bin/zsh-real && \
+    printf '#!/bin/sh\n' > /bin/zsh && \
+    printf '# Zsh wrapper - sets RALPH_GIT_ALLOWED for git access\n' >> /bin/zsh && \
+    printf 'export RALPH_GIT_ALLOWED=1\n' >> /bin/zsh && \
+    printf 'exec /bin/zsh-real "$@"\n' >> /bin/zsh && \
+    chmod +x /bin/zsh
 
-ENTRYPOINT ["/entrypoint.sh"]
+USER ralph
 
 # Keep container idle - user can run /ralph.sh manually
 CMD ["sleep", "infinity"]

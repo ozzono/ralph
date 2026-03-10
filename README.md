@@ -1,125 +1,125 @@
-# Ralph
+# Custom Ralph
+
+This is a custom fork of [Ralph](https://ghuntley.com/ralph/) configured to run as container-based autonomous AI agent loops. It provides Docker containers pre-loaded with Claude Code, Go, and optionally Flutter, so you can mount any project and let Ralph iterate on it inside an isolated environment.
 
 ![Ralph](ralph.webp)
 
-Ralph is an autonomous AI agent loop that runs AI coding tools ([Amp](https://ampcode.com) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/). [Read Ryan Carson's in-depth article on how he uses Ralph](https://x.com/ryancarson/status/2008548371712135632).
 
-Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
+## How It Works
 
-[Read my in-depth article on how I use Ralph](https://x.com/ryancarson/status/2008548371712135632)
+Ralph is an autonomous AI agent loop that runs Claude Code repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
 
-## Prerequisites
+1. You define user stories in `prd.json`
+2. Ralph spawns a fresh Claude Code instance each iteration
+3. The agent picks the highest-priority incomplete story, implements it, runs quality checks, and commits
+4. Repeats until all stories pass or max iterations are reached
 
-- One of the following AI coding tools installed and authenticated:
-  - [Amp CLI](https://ampcode.com) (default)
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
-- `jq` installed (`brew install jq` on macOS)
-- A git repository for your project
+## Container Variants
 
-## Setup
+### `ralph-loop` (Dockerfile)
 
-### Option 1: Copy to your project
+General-purpose container with:
+- Ubuntu 24.04, Node.js 22, Go 1.23.6
+- Claude Code CLI
+- zsh + Oh My Zsh
+- Git security wrapper (restricts git access to interactive shells only)
 
-Copy the ralph files into your project:
+### `ralph-flutter` (Dockerfile.flutter)
 
-```bash
-# From your project root
-mkdir -p scripts/ralph
-cp /path/to/ralph/ralph.sh scripts/ralph/
+Everything in `ralph-loop` plus:
+- Flutter 3.27.4 SDK (web + linux precached)
+- Flutter build dependencies (clang, cmake, ninja-build, GTK3, etc.)
 
-# Copy the prompt template for your AI tool of choice:
-cp /path/to/ralph/prompt.md scripts/ralph/prompt.md    # For Amp
-# OR
-cp /path/to/ralph/CLAUDE.md scripts/ralph/CLAUDE.md    # For Claude Code
+## Makefile
 
-chmod +x scripts/ralph/ralph.sh
-```
+| Rule | Command | Description |
+|------|---------|-------------|
+| `make build` | `docker build -f Dockerfile -t ralph-loop:latest .` | Build the general-purpose container |
+| `make build-flutter` | `docker build -f Dockerfile.flutter -t ralph-flutter:latest .` | Build the Flutter container |
 
-### Option 2: Install skills globally (Amp)
+## Shell Aliases
 
-Copy the skills to your Amp or Claude config for use across all projects:
+Add these to your `.zshrc` or `.bashrc` to quickly launch Ralph containers for any project:
 
-For AMP
-```bash
-cp -r skills/prd ~/.config/amp/skills/
-cp -r skills/ralph ~/.config/amp/skills/
-```
+### `ralph-loop`
 
-For Claude Code (manual)
-```bash
-cp -r skills/prd ~/.claude/skills/
-cp -r skills/ralph ~/.claude/skills/
-```
+Starts (or attaches to) a `ralph-loop` container with the current directory mounted at `/workspace/application`. Copies your Claude credentials into the container automatically.
 
-### Option 3: Use as Claude Code Marketplace
+```sh
+ralph-loop() {
+  local name="$(basename "$(pwd)")"
 
-Add the Ralph marketplace to Claude Code:
+  if ! docker ps --format '{{.Names}}' | grep -q "^${name}$"; then
+    docker run -d --rm \
+      -v "$(pwd):/workspace/application" \
+      -w /workspace \
+      --user "ralph:ralph" \
+      --name "$name" \
+      ralph-loop
 
-```bash
-/plugin marketplace add snarktank/ralph
-```
+    [ -f "$HOME/.claude/.claude.json" ] && docker cp "$HOME/.claude.json" "$name":/home/ralph/.claude.json 2>/dev/null || true
+    [ -f "$HOME/.claude/settings.json" ] && docker cp "$HOME/.claude/settings.json" "$name":/home/ralph/.claude/settings.json 2>/dev/null || echo "$HOME/.claude/settings.json not found"
+    [ -f "$HOME/.claude/.credentials.json" ] && docker cp "$HOME/.claude/.credentials.json" "$name":/home/ralph/.claude/.credentials.json 2>/dev/null || echo "$HOME/.claude/.credentials.json not found"
+  fi
 
-Then install the skills:
-
-```bash
-/plugin install ralph-skills@ralph-marketplace
-```
-
-Available skills after installation:
-- `/prd` - Generate Product Requirements Documents
-- `/ralph` - Convert PRDs to prd.json format
-
-Skills are automatically invoked when you ask Claude to:
-- "create a prd", "write prd for", "plan this feature"
-- "convert this prd", "turn into ralph format", "create prd.json"
-
-### Configure Amp auto-handoff (recommended)
-
-Add to `~/.config/amp/settings.json`:
-
-```json
-{
-  "amp.experimental.autoHandoff": { "context": 90 }
+  docker exec -it -u ralph "$name" zsh
 }
 ```
 
-This enables automatic handoff when context fills up, allowing Ralph to handle large stories that exceed a single context window.
+### `ralph-flutter`
 
-## Workflow
+Same as above but uses the `ralph-flutter` image. Container name is suffixed with `-flutter`.
 
-### 1. Create a PRD
+```sh
+ralph-flutter() {
+  local name="$(basename "$(pwd)")"
+  local container_name="${name}-flutter"
 
-Use the PRD skill to generate a detailed requirements document:
+  if ! docker ps --format '{{.Names}}' | grep -q "^${container_name}$"; then
+    docker run -d --rm \
+      -v "$(pwd):/workspace/application" \
+      -w /workspace \
+      --user ralph:ralph \
+      --name "$container_name" \
+      ralph-flutter
 
+    [ -f "$HOME/.claude/.claude.json" ] && docker cp "$HOME/.claude.json" "$container_name":/home/ralph/.claude.json 2>/dev/null || true
+    [ -f "$HOME/.claude/settings.json" ] && docker cp "$HOME/.claude/settings.json" "$container_name":/home/ralph/.claude/settings.json 2>/dev/null || true
+    [ -f "$HOME/.claude/.credentials.json" ] && docker cp "$HOME/.claude/.credentials.json" "$container_name":/home/ralph/.claude/.credentials.json 2>/dev/null || true
+  fi
+
+  docker exec -it -u ralph "$container_name" zsh
+}
 ```
-Load the prd skill and create a PRD for [your feature description]
+
+## Usage
+
+### Quick Start
+
+```bash
+# 1. Build the container
+make build            # or: make build-flutter
+
+# 2. cd into your project and launch
+cd ~/my-project
+ralph-loop            # or: ralph-flutter
+
+# 3. Inside the container, run ralph
+./ralph.sh --tool claude 10
 ```
 
-Answer the clarifying questions. The skill saves output to `tasks/prd-[feature-name].md`.
-
-### 2. Convert PRD to Ralph format
-
-Use the Ralph skill to convert the markdown PRD to JSON:
-
-```
-Load the ralph skill and convert tasks/prd-[feature-name].md to prd.json
-```
-
-This creates `prd.json` with user stories structured for autonomous execution.
-
-### 3. Run Ralph
+### Running Ralph
 
 ```bash
 # Using Amp (default)
-./scripts/ralph/ralph.sh [max_iterations]
+./ralph.sh [max_iterations]
 
 # Using Claude Code
-./scripts/ralph/ralph.sh --tool claude [max_iterations]
+./ralph.sh --tool claude [max_iterations]
 ```
 
-Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI coding tool.
-
-Ralph will:
+Default is 10 iterations. Ralph will:
 1. Create a feature branch (from PRD `branchName`)
 2. Pick the highest priority story where `passes: false`
 3. Implement that single story
@@ -129,86 +129,56 @@ Ralph will:
 7. Append learnings to `progress.txt`
 8. Repeat until all stories pass or max iterations reached
 
+### Workflow
+
+1. **Create a PRD** - Use the `/prd` skill to generate a requirements document
+2. **Convert to Ralph format** - Use the `/ralph` skill to convert the PRD to `prd.json`
+3. **Run Ralph** - `./ralph.sh --tool claude`
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp` or `--tool claude`) |
+| `Dockerfile` | General-purpose container (Node.js, Go, Claude Code) |
+| `Dockerfile.flutter` | Flutter variant with SDK + build deps |
+| `Makefile` | Build rules for both container images |
+| `ralph.sh` | Bash loop that spawns fresh AI instances per iteration |
 | `prompt.md` | Prompt template for Amp |
 | `CLAUDE.md` | Prompt template for Claude Code |
 | `prd.json` | User stories with `passes` status (the task list) |
 | `prd.json.example` | Example PRD format for reference |
-| `progress.txt` | Append-only learnings for future iterations |
-| `skills/prd/` | Skill for generating PRDs (works with Amp and Claude Code) |
-| `skills/ralph/` | Skill for converting PRDs to JSON (works with Amp and Claude Code) |
-| `.claude-plugin/` | Plugin manifest for Claude Code marketplace discovery |
-| `flowchart/` | Interactive visualization of how Ralph works |
+| `progress.txt` | Append-only learnings across iterations |
+| `skills/prd/` | Skill for generating PRDs |
+| `skills/ralph/` | Skill for converting PRDs to JSON |
+| `flowchart/` | Interactive visualization of the Ralph loop |
 
-## Flowchart
+## Git Security Model
 
-[![Ralph Flowchart](ralph-flowchart.png)](https://snarktank.github.io/ralph/)
-
-**[View Interactive Flowchart](https://snarktank.github.io/ralph/)** - Click through to see each step with animations.
-
-The `flowchart/` directory contains the source code. To run locally:
-
-```bash
-cd flowchart
-npm install
-npm run dev
-```
+Inside the container, git is wrapped so that only interactive zsh sessions can use it. When Claude Code spawns subprocesses, `RALPH_GIT_ALLOWED` is unset via `.zshenv`, preventing the AI agent from running arbitrary git commands. This ensures commits only happen through the controlled `ralph.sh` flow.
 
 ## Critical Concepts
 
 ### Each Iteration = Fresh Context
 
-Each iteration spawns a **new AI instance** (Amp or Claude Code) with clean context. The only memory between iterations is:
+Each iteration spawns a **new AI instance** with clean context. The only memory between iterations is:
 - Git history (commits from previous iterations)
 - `progress.txt` (learnings and context)
 - `prd.json` (which stories are done)
 
 ### Small Tasks
 
-Each PRD item should be small enough to complete in one context window. If a task is too big, the LLM runs out of context before finishing and produces poor code.
-
-Right-sized stories:
+Each PRD item should be small enough to complete in one context window. Right-sized examples:
 - Add a database column and migration
 - Add a UI component to an existing page
 - Update a server action with new logic
-- Add a filter dropdown to a list
 
-Too big (split these):
-- "Build the entire dashboard"
-- "Add authentication"
-- "Refactor the API"
+Too big (split these): "Build the entire dashboard", "Add authentication", "Refactor the API"
 
-### AGENTS.md Updates Are Critical
+### Archiving
 
-After each iteration, Ralph updates the relevant `AGENTS.md` files with learnings. This is key because AI coding tools automatically read these files, so future iterations (and future human developers) benefit from discovered patterns, gotchas, and conventions.
-
-Examples of what to add to AGENTS.md:
-- Patterns discovered ("this codebase uses X for Y")
-- Gotchas ("do not forget to update Z when changing W")
-- Useful context ("the settings panel is in component X")
-
-### Feedback Loops
-
-Ralph only works if there are feedback loops:
-- Typecheck catches type errors
-- Tests verify behavior
-- CI must stay green (broken code compounds across iterations)
-
-### Browser Verification for UI Stories
-
-Frontend stories must include "Verify in browser using dev-browser skill" in acceptance criteria. Ralph will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
-
-### Stop Condition
-
-When all stories have `passes: true`, Ralph outputs `<promise>COMPLETE</promise>` and the loop exits.
+Ralph automatically archives previous runs when you start a new feature (different `branchName`). Archives are saved to `archive/YYYY-MM-DD-feature-name/`.
 
 ## Debugging
-
-Check current state:
 
 ```bash
 # See which stories are done
@@ -220,17 +190,6 @@ cat progress.txt
 # Check git history
 git log --oneline -10
 ```
-
-## Customizing the Prompt
-
-After copying `prompt.md` (for Amp) or `CLAUDE.md` (for Claude Code) to your project, customize it for your project:
-- Add project-specific quality check commands
-- Include codebase conventions
-- Add common gotchas for your stack
-
-## Archiving
-
-Ralph automatically archives previous runs when you start a new feature (different `branchName`). Archives are saved to `archive/YYYY-MM-DD-feature-name/`.
 
 ## References
 
